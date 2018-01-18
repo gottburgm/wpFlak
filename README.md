@@ -8,7 +8,7 @@
 - Exploit Finder
 - Exploiter
 
-- German made
+- ✠ 𝔡𝔢𝔲𝔱𝔰𝔠𝔥𝔩𝔞𝔫𝔡 ✠
 
      <p align="center"><img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Bundesarchiv_Bild_101I-635-4000-24%2C_Deutschland%2C_Flakturm_mit_Vierlingsflak.jpg" /></p>
      
