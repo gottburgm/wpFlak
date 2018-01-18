@@ -29,6 +29,7 @@ my $ARGUMENTS = {
     usernames_list     => 'data/usernames.lst',
     passwords_list     => 'data/passwords.lst',
     default_paths_list => 'data/default_paths.lst',
+    header_file        => 0,
 };
 
 my $SCAN = {
@@ -48,36 +49,17 @@ my $PATHS = {
     plugins_directory => 'wp-content/plugins/',
 };
 
+my $pm = new Parallel::ForkManager(30);
+
 ### Call main
 main();
 
 sub header {
-
-    print color('black'), "\n";
-    print qq{                                        
-
-                              ____    ___             __         
-                             /\  _`\ /\_ \           /\ \        
-            __  __  __  _____\ \ \L\_\//\ \      __  \ \ \/'\
-};
-
-    print color('yellow');
-    print qq{
-           /\ \/\ \/\ \/\ '__`\ \  _\/ \ \ \   /'__`\ \ \ , <    
-           \ \ \_/ \_/ \ \ \L\ \ \ \/   \_\ \_/\ \L\.\_\ \ \\`\  
-};
-
-    print color('red'); 
-    print qq{
-            \ \___x___/'\ \ ,__/\ \_\   /\____\ \__/.\_\\ \_\ \_\ 
-             \/__//__/   \ \ \/  \/_/   \/____/\/__/\/_/ \/_/\/_/ 
-                          \ \_\                                   
-                           \/_/                                   
-                                                                  
-                                     ✠ 𝔡𝔢𝔲𝔱𝔰𝔠𝔥𝔩𝔞𝔫𝔡 ✠
-
-    };
+    if(-f $ARGUMENTS->{header_file}) {
+        system("cat " . $ARGUMENTS->{header_file});
+    }
 }
+
 sub main {
     
     # display header
@@ -119,7 +101,6 @@ sub main {
         info("Starting bruteforcer to find valid credentials on : " . $WORDPRESS->{login_page});
         $WORDPRESS = loginBruteforce($WORDPRESS);
     }
-    
 }
 
 sub initialize {
@@ -191,6 +172,7 @@ sub checkWordpressUrl {
         
         $WORDPRESS = checkHeaders($WORDPRESS, $response);
         $WORDPRESS = extractComponents($WORDPRESS, $response->content);
+        $WORDPRESS = extractSpecialUrls($WORDPRESS, $response->content);
         
         my $login_page_response = $SCAN->{browser}->get($url . $PATHS->{login_page});
         
@@ -242,8 +224,8 @@ sub checkHeaders {
                 when(/X-Generator|X-Powered-By|X-Meta-Generator/i) {
                     given($header_value)
                     {
-                        when(/[^\d\s]*(?:\s|-|_|\/)?\(?\s*\d[\.\d]*/i) {
-                            ($service_name, $version) = $header_value =~ /([^\d\s]*)(?:\s|-|_|\/)?\(?\s*(\d[\.\d]*)/i;
+                        when(/[^\d\s]*(?:\s|\-|_|\/)?\(?\s*\d[\.\d]*/i) {
+                            ($service_name, $version) = $header_value =~ /([^\d\s]*)(?:\s|\-|_|\/)?\(?\s*(\d[\.\d]*)/i;
                         }
                             
                         when(/[a-zA-Z0-9_\-\.\!]+/i) {
@@ -283,8 +265,8 @@ sub extractMetaGenerators {
                 ($generator_name, $generator_version) = $match =~ /([a-zA-Z0-9\-\_\s]+)\s?\(([\d\.]+([\d\.vrev]+)*)\)/i;
             }
             
-            when(/[^\d\s]*\s*(?:\s|-|_|\/)?\s*\d[\.\d]*/i) {
-                ($generator_name, $generator_version) = $match =~ /([^\d\s]*)\s*(?:\s|-|_|\/)?\s*(\d[\.\d]*)/i;
+            when(/[^\d\s]*\s*(?:\s|-|_|\/|\()?\s*\d[\.\d]*/i) {
+                ($generator_name, $generator_version) = $match =~ /([^\d\s]*)\s*(?:\s|-|_|\/|\()?\s*(\d[\.\d]*)/i;
             }
             
             when(/[a-zA-Z0-9_\-\.\!]+/i) {
@@ -323,9 +305,9 @@ sub wordpressUsers {
                 
                 for(my $id = 0; $id <= 15; $id++) {
                     my $request = HTTP::Request->new('GET', $WORDPRESS->{url} . '?author=' . $id);
-                    $requests[$id] = $request;
+                    push(@requests, $request);
                 }
-                $WORDPRESS = getAuthorsUsers($WORDPRESS, \@requests);
+                $WORDPRESS = getAuthorsUsers($WORDPRESS, @requests);
             }
             
             when(/FORGETPASSWORD/i) {
@@ -334,18 +316,18 @@ sub wordpressUsers {
                 for(my $id = 0; $id <= 15; $id++) {
                     my $request = HTTP::Request->new('POST', $WORDPRESS->{url} . 'wp-login.php?action=lostpassword');
                     $request->content('author=' . $id);
-                    $requests[$id] = $request;
+                    push(@requests, $request);
                 }
-                $WORDPRESS = getForgetPasswordUsers($WORDPRESS, \@requests);
+                $WORDPRESS = getForgetPasswordUsers($WORDPRESS, @requests);
             }
             
             when(/XMLRPC/i) {
                 my @requests = ();
                 
                 my $request = HTTP::Request->new('GET', $WORDPRESS->{url} . 'wp-json/wp/v2/users');
-                $requests[0] = $request;
+                push(@requests, $request);
             
-                $WORDPRESS = getXMLRPCUsers($WORDPRESS, \@requests);
+                $WORDPRESS = getXMLRPCUsers($WORDPRESS, @requests);
             }
         }
     }
@@ -387,11 +369,37 @@ sub wordpressVersion {
 
 ######################################## Fingerprinting Functions ########################################
 
+sub extractSpecialUrls {
+    my ( $WORDPRESS, $source ) = @_;
+    
+    my @matches = $source =~ m/<link rel,* href=["'][^"']*(?:\/wp-json|\/wp-includes\/wlwmanifest\.xml|xmlrpc\.php(?:\?rsd)?)/sgi;
+    
+    foreach my $match (@matches) {
+        print "$match\n";
+        given($match)
+        {
+            when(/wp-json/i) {
+                $WORDPRESS->{json_url} = $WORDPRESS->{url} . $match;
+            }
+            
+            when(/wlwmanifest\.xml/i) {
+                $WORDPRESS->{wlwmanifest_url} = $WORDPRESS->{url} . $match;
+            }
+            
+            when(/xmlrpc\.php/i) {
+                $WORDPRESS->{xmlrpc_url} = $WORDPRESS->{url} . $match;
+            }
+        }
+    }
+    
+    return $WORDPRESS;
+}
+
 sub extractComponents {
     my ( $WORDPRESS, $source ) = @_;
     $source =~ s/\\\//\//gi;
     my @matches = $source =~ m/(\/wp-content[\\]?\/(?:themes|plugins)[\\]?\/[^\/'"]*\/[^"'>< ]*)/sgi;
-    
+
     foreach my $match (@matches) {
         my $path = $match;
         my ($component_type, $component_name, $component_path) = $path =~ /\/wp-content[\\]?\/(themes|plugins)[\\]?\/([^\/'"]*)(\/[^"'\)>< ]*)/i;
@@ -416,14 +424,12 @@ sub extractComponents {
 }
 
 sub getAuthorsUsers {
-    my ( $WORDPRESS, $ref_requests ) = @_;
+    my ( $WORDPRESS, @requests ) = @_;
     
-    my @requests = @{ $ref_requests };
     my @responses = asyncRequests(@requests);
 
-    for(my $user_id = 0; $user_id < 0+@responses; $user_id++) {
+    foreach my $response (@responses) {
         my $username = 0;
-        my $response = $responses[$user_id];
         $response = $response->previous if($response->previous);
         
         if($response->header('Location') && $response->header('Location') =~ /\/author\/.*\/?/) {
@@ -431,8 +437,8 @@ sub getAuthorsUsers {
         }
         
         if($username) {
-            result("WordPress User " . color("cyan") . "#$user_id " . color("blue") . "Found : " . color("yellow") . $username);
-            $WORDPRESS->{users}->{$user_id} = $username;
+            result("WordPress User Found : " . color("yellow") . $username);
+            $WORDPRESS->{users}->{$username}->{username} = $username;
         }
     }
     
@@ -440,21 +446,19 @@ sub getAuthorsUsers {
 }
 
 sub getForgetPasswordUsers {
-    my ( $WORDPRESS, $ref_requests ) = @_;
+    my ( $WORDPRESS, @requests ) = @_;
     
-    my @requests = @{ $ref_requests };
     my @responses = asyncRequests(@requests);
 
-    for(my $user_id = 0; $user_id < 0+@responses; $user_id++) {
+    foreach my $response (@responses) {
         my $username = 0;
-        my $response = $responses[$user_id];
         
         if($response->content =~ /author-([^\s]*)\s*author/i) {
             ($username) = $response->content =~ / author-([^\s]*)\s*author/i;
             
             if($username) {
-                result("WordPress User " . color("cyan") . "#$user_id " . color("blue") . "Found : " . color("yellow") . $username);
-                $WORDPRESS->{users}->{$user_id} = $username;
+                result("WordPress User Found : " . color("yellow") . $username);
+                $WORDPRESS->{users}->{$username}->{username} = $username;
             }
         }
     }
@@ -463,22 +467,27 @@ sub getForgetPasswordUsers {
 }
 
 sub getXMLRPCUsers {
-    my ( $WORDPRESS, $ref_requests ) = @_;
+    my ( $WORDPRESS, @requests ) = @_;
     
-    my @requests = @{ $ref_requests };
     my @responses = asyncRequests(@requests);
 
-    for(my $user_id = 0; $user_id < 0+@responses; $user_id++) {
-        my $response = $responses[$user_id];
+    foreach my $response (@responses) {
+        my $username = 0;
         last if($response->content =~ /rest_api_access_restricted/);
         
         if($response->content =~ /"slug":/) {
-            ($WORDPRESS->{users}->{$user_id}->{picture}) = $response->content =~ /"link":"([^"]*)"/i if($response->content =~ /"link":"([^"]*)"/i);
-            ($WORDPRESS->{users}->{$user_id}->{name}) = $response->content =~ /"name":"([^"]*)"/i if($response->content =~ /"name":"([^"]*)"/i);
-            ($WORDPRESS->{users}->{$user_id}->{username}) = $response->content =~ /"slug":"([^"]*)"/i if($response->content =~ /"slug":"([^"]*)"/i);
+            ($username) = $response->content =~ /"slug":"([^"]*)"/i if($response->content =~ /"slug":"/i);
             
-            if($WORDPRESS->{users}->{$user_id}->{username}) {
-                result("WordPress User " . color("cyan") . "#$user_id " . color("blue") . "Found : " . color("yellow") . $WORDPRESS->{users}->{$user_id}->{username});
+            if($username) {
+                $WORDPRESS->{users}->{$username}->{username} = $username;
+                
+                ($WORDPRESS->{users}->{$username}->{id}) = $response->content =~ /"id":"([^"]*)"/i if($response->content =~ /"id":"/i);
+                ($WORDPRESS->{users}->{$username}->{picture}) = $response->content =~ /"link":"([^"]*)"/i if($response->content =~ /"link":"/i);
+                ($WORDPRESS->{users}->{$username}->{name}) = $response->content =~ /"name":"([^"]*)"/i if($response->content =~ /"name":"/i);
+            
+                if($WORDPRESS->{users}->{$username}->{username}) {
+                    result("WordPress User Found : " . color("yellow") . $WORDPRESS->{users}->{$username}->{username});
+                }
             }
         }
     }
@@ -575,7 +584,8 @@ sub loginBruteforce {
         my @responses = asyncRequests(@requests);
         
         foreach my $response (@responses) {
-            my ($account_username, $account_password) = $response->request->content =~ /log=([^&]*)&pwd=([^&]*)&/;
+            my $request = $response->request;
+            my ($account_username, $account_password) = $request->content =~ /log=(.*)&pwd=(.*)&/;
             print color("blue"), "[*] Tying " . color("cyan") . $account_username . color("white") . ":" . color("cyan") . $account_password . color("blue") . " ...\n";
             if($response->previous) {
                 $response = $response->previous;
@@ -649,19 +659,14 @@ sub revsliderExploit {
 
 sub asyncRequests {
     my ( @requests ) = @_;
-    my $pm = Parallel::ForkManager->new(0+@requests);
-    
     my @responses = ();
     
     foreach my $request (@requests) {
         # Forks and returns the pid for the child:
-        my $pid = $pm->start and next; 
         
         push(@responses, $SCAN->{browser}->request($request));
-        
-        $pm->finish; # Terminates the child process
     }
-    $pm->wait_all_children;
+    
 
     return @responses;
 }
