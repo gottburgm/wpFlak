@@ -1,0 +1,6 @@
+feed/
+feed/rdf/
+feed/atom/
+readme.html
+sitemap.xml
+wp-links-opml.php

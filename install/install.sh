@@ -16,3 +16,12 @@ cpan5 -f -T -i HTTP::Response
 cpan5 -f -T -i HTTP::Cookies
 cpan5 -f -T -i Socket
 cpan5 -f -T -i Coro
+cpan5 -f -T -i Coro::State
+cpan5 -f -T -i Coro::Semaphore
+cpan5 -f -T -i Coro::AnyEvent
+cpan5 -f -T -i Coro::LWP
+cpan5 -f -T -i AnyEvent
+cpan5 -f -T -i Carp
+cpan5 -f -T -i Time::HiRes
+cpan5 -f -T -i Params::Check
+cpan5 -f -T -i LWP::Protocol::http
