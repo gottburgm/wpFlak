@@ -1,0 +1,8 @@
+changelog.txt
+CHANGELOG.md
+changelog.md
+readme.txt
+README.txt
+README.md
+readme.md
+Readme.txt

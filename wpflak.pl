@@ -9,6 +9,7 @@ use LWP::UserAgent;
 use HTTP::Request;
 use HTTP::Response;
 use HTTP::Cookies;
+use URI::URL;
 use Data::Dump qw(dump);
 use Term::ANSIColor qw(color colored);
 use Getopt::Long;
@@ -20,16 +21,18 @@ no warnings 'experimental';
 ### Global variables (for configuration/settings stuff)
 
 my $ARGUMENTS = {
-    url                => 0,
-    timeout            => 15,
-    threads            => 50,
-    useragent          => 'Mozilla/5.0 (X11; U; Linux i686; en-US; rv:0.9.3) Gecko/20010801',
-    proxy              => 0,
-    verbosity          => 0,
-    usernames_list     => 'data/usernames.lst',
-    passwords_list     => 'data/passwords.lst',
-    default_paths_list => 'data/default_paths.lst',
-    header_file        => 0,
+    url                   => 0,
+    timeout               => 15,
+    threads               => 50,
+    useragent             => 'Mozilla/5.0 (X11; U; Linux i686; en-US; rv:0.9.3) Gecko/20010801',
+    proxy                 => 0,
+    verbosity             => 0,
+    usernames_list        => 'data/usernames.lst',
+    passwords_list        => 'data/passwords.lst',
+    default_paths_list    => 'data/default_paths.lst',
+    plugins_version_files => 'data/plugins_version_files.txt',
+    themes_version_files  => 'data/themes_version_files.txt',
+    header_file           => 0,
 };
 
 my $SCAN = {
@@ -78,7 +81,7 @@ sub main {
         }
         
         if($WORDPRESS->{version}) {
-            result("WordPress version found : " . color("cyan") . "WordPress (" . $WORDPRESS->{version} . ")");
+            result("WordPress version found : " . color("cyan") . "WordPress " . color("blue") . "(" . color("red") .  $WORDPRESS->{version} . color("blue") .  ")");
         } else {
             warning("WordPress version couldn't be found .");
         }
@@ -95,6 +98,11 @@ sub main {
         info("Starting usernames extraction on : " . $WORDPRESS->{url});
         $WORDPRESS = wordpressUsers($WORDPRESS, 'ALL');
     }
+    
+    # Full path disclosure tests
+    $WORDPRESS = checkFPD($WORDPRESS);
+    $WORDPRESS = backupFiles($WORDPRESS);
+    
     
     # Bruteforce credentials
     if($SCAN->{bruteforce}) {
@@ -161,7 +169,9 @@ sub checkWordpressUrl {
         credentials     => undef,
         plugins         => undef,
         themes          => undef,
+        sensitive_files => undef,
         vulnerabilities => undef,
+        urls            => [],
         login_page      => 0,
         valid           => 0,
         version         => 0,
@@ -173,6 +183,7 @@ sub checkWordpressUrl {
         $WORDPRESS = checkHeaders($WORDPRESS, $response);
         $WORDPRESS = extractComponents($WORDPRESS, $response->content);
         $WORDPRESS = extractSpecialUrls($WORDPRESS, $response->content);
+        $WORDPRESS = txtRobots($WORDPRESS);
         
         my $login_page_response = $SCAN->{browser}->get($url . $PATHS->{login_page});
         
@@ -199,7 +210,7 @@ sub checkWordpressUrl {
         }
         
         if($WORDPRESS->{version}) {
-            result("WordPress Version Found : WordPress (" . $WORDPRESS->{version} . ")");
+            result("WordPress Version Found :" . color("cyan") . " WordPress " . color("blue") . "(" . color("red") .  $WORDPRESS->{version} . color("blue") .  ")");
         } else {
             warning("Couldn't find WordPress Version .");
         }
@@ -240,6 +251,90 @@ sub checkHeaders {
                 $WORDPRESS->{version} = $version if($version);
                 
                 return $WORDPRESS;
+            }
+        }
+    }
+    
+    return $WORDPRESS;
+}
+
+sub backupFiles {
+    my ( $WORDPRESS ) = @_;
+    
+    my @files = ('index', 'wp-config');
+    my @suffixes = ('~', 'php.backup', 'php.save', 'php.bck', 'php.back', 'php.swp', 'php.swo', 'save', 'bck', 'back', 'swp', 'backup', 'swo', 'php_bak', 'old', 'orig', '1', 'original', 'txt', '2.php', '2');
+    my @requests = ();
+    my @backup_files = ();
+    
+    foreach my $file (@files) {
+        push(@backup_files, '#' . $file . '.php#');
+        push(@backup_files, '.' . $file . '~');
+        
+        foreach my $suffixe (@suffixes) {
+            push(@backup_files, $file . $suffixe);
+        }
+    
+        foreach my $backup_file (@backup_files) {
+            push(@requests, HTTP::Request->new('GET', $WORDPRESS->{url} . $backup_file));
+        }
+    
+        my @responses = asyncRequests(@requests);
+    
+        foreach my $response (@responses) {
+            if($response->is_success && $response->content =~ /<\?(?:php)|\?>/i) {
+                $WORDPRESS->{sensitive_files}->{"$file.php"} = $response->request->uri;
+            
+                result("WordPress Backup File [$file.php] found : " . color("yellow") . " " . $response->request->uri);
+            }
+        }
+    }
+    
+    return $WORDPRESS;
+}
+
+sub txtRobots {
+    my ( $WORDPRESS ) = @_;
+    my $uri = new URI::URL $WORDPRESS->{url};
+    my $request = HTTP::Request->new('GET', $WORDPRESS->{url} . 'robots.txt');
+    my $response = $SCAN->{browser}->request($request);
+    
+    if($response->is_success) {
+        result("TXT Robots (robots.txt) Found : " , $response->request->uri);
+        
+        foreach my $line (split(/\n/, $response->content)) {
+            if($line =~ /^(?:Dis)Allow:/i) {
+                my ($tag, $path) = split(/:[\s]/, $line);
+                
+                if($path && $path !~ /\*/) {
+                    if($path =~ /^https?:/ && $path =~ /$uri->host/) {
+                        push(@{ $WORDPRESS->{urls} }, $path);
+                    } elsif(substr($path, 0, 1) eq '/') {
+                        push(@{ $WORDPRESS->{urls} }, $WORDPRESS->{url} . substr($path, 1, length($path)));
+                    }
+                    
+                    if($path =~ /wp-(?:admin|includes|content)/i) {
+                        my $wordpress_path = 0;
+                        result("WordPress Path Found In TXT Robots : " . $path);
+                        
+                        given($path)
+                        {
+                            when(/https?:\/\/[^\/]*(\/[^\/]*)\/wp-(?:includes|content|admin)/i) {
+                                ($wordpress_path) = $path =~ /https?:\/\/[^\/]*(\/[^\/]*)\/wp-(?:includes|content|admin)/i;
+                            }
+                            
+                            when(/^\/.*wp-(?:includes|content|admin)\//i) {
+                                ($wordpress_path) = $path =~ /^(\/.*)wp-(?:includes|content|admin)\//i;
+                            }
+                        }
+                        
+                        if($wordpress_path) {
+                            $WORDPRESS->{url} = $uri->scheme . '://' . $uri->host . ':' . $uri->port . $wordpress_path;
+                            
+                            result("WordPress installation path extracted from TXT Robots (robots.txt) : " . $wordpress_path);
+                            info("Using new WordPress URL : " . $WORDPRESS->{url});
+                        }
+                    }
+                }
             }
         }
     }
@@ -372,10 +467,9 @@ sub wordpressVersion {
 sub extractSpecialUrls {
     my ( $WORDPRESS, $source ) = @_;
     
-    my @matches = $source =~ m/<link rel,* href=["'][^"']*(?:\/wp-json|\/wp-includes\/wlwmanifest\.xml|xmlrpc\.php(?:\?rsd)?)/sgi;
+    my @matches = $source =~ m/<link rel.* href=["'][^"']*(?:\/wp-json|\/wp-includes\/wlwmanifest\.xml|xmlrpc\.php(?:\?rsd)?)/sgi;
     
     foreach my $match (@matches) {
-        print "$match\n";
         given($match)
         {
             when(/wp-json/i) {
@@ -403,7 +497,6 @@ sub extractComponents {
     foreach my $match (@matches) {
         my $path = $match;
         my ($component_type, $component_name, $component_path) = $path =~ /\/wp-content[\\]?\/(themes|plugins)[\\]?\/([^\/'"]*)(\/[^"'\)>< ]*)/i;
-        print "\t--> $match\n";
         
         if(!defined($WORDPRESS->{lc($component_type)}->{$component_name})) {
             print color("bold green"), "\t[+] " . color("blue") . "WordPress " . color("cyan") . substr(ucfirst($component_type), 0, -1) . color("blue") . " Found : " . color("red") . $component_name . "\n\n";
@@ -412,7 +505,22 @@ sub extractComponents {
             $WORDPRESS->{lc($component_type)}->{$component_name}->{url} = $WORDPRESS->{url} . 'wp-content/' . $component_type . '/' . $component_name . '/';
             
             if(!defined($WORDPRESS->{lc($component_type)}->{$component_name}->{version})) {
+                
+                my @paths = ();
+                
                 info("Getting " . ucfirst(lc($component_type)) . " "  . $component_name . " version ...");
+                
+                given(lc($component_type))
+                {
+                    when(/themes/i) {
+                        @paths = read_file($WORDPRESS->{themess_version_files}, );
+                        
+                    }
+                    
+                    when(/plugins/i) {
+                        @paths = read_file(data/plugins_version_files);
+                    }
+                }
                 my $request = HTTP::Request->new('GET', $WORDPRESS->{lc($component_type)}->{$component_name}->{url} . '/readme.txt');
                 
             }
@@ -612,6 +720,26 @@ sub getCustomPasswords {
     return @custom_passwords;
 }
 
+sub checkFPD {
+    my ( $WORDPRESS ) = @_;
+    my $webroot_path = 0;
+    
+    my @urls = ('wp-includes/rss-functions.php');
+    
+    foreach my $url (@urls) {
+        my $response = $SCAN->{browser}->get($url);
+        
+        if($response->is_success) {
+            if($response->content =~ /Fatal Error[:\s]*/i) {
+                ($webroot_path) = $response->content =~ /Fatal Error[:\s]+(.+?)/i;
+                result("WordPress Web ROOT Path found : " . $response->request->uri);
+            }
+        }
+    }
+    
+    return $WORDPRESS;
+}
+
 sub revsliderExploit {
     my ( $WORDPRESS ) = @_;
     my $exploit_path = 'wp-admin/admin-ajax.php?action=revslider_show_image&img=';
@@ -697,7 +825,7 @@ sub read_file {
 
 sub info {
     my ( $text ) = @_;
-    print color("white") . "[" . color("blue") . "✠" . color("white") . "]" . color("blue") . " INFO" . color("white") . ": " . color("cyan") . " $text\n";
+    print color("blue") . '✠' . color("blue") . " INFO" . color("white") . ": " . color("cyan") . " $text\n";
 }
 
 sub warning {
@@ -707,7 +835,7 @@ sub warning {
 
 sub result {
     my ( $text ) = @_;
-    print color("white") . "[" . color("green") . "+" . color("white") . "]" . color("blue") . " INFO" . color("white") . ": " . color("cyan") . " $text\n";
+    print color("green") . '✠' . color("blue") . " INFO" . color("white") . ": " . color("cyan") . " $text\n";
 }
 
 sub error {
@@ -720,22 +848,35 @@ sub error {
 
 sub help {
     print "\n";
-    print qq {  
-        # Usage
-        perl $0  --url URL [OPTIONS]
+    print qq {
         
-        # Arguments
+        ✠ 𝔲𝔰𝔞𝔤𝔢
+        ------
+
+            perl $0  --url URL [OPTIONS]
+        
+
+        ✠ 𝔞𝔯𝔤𝔲𝔪𝔢𝔫𝔱𝔰
+        ----------
+        
+         -u,--url [VALUE]         :  The target URL [Format: scheme://host]
+        -tm,--timeout [VALUE]     :  Max timeout for the HTTP requests
+         -t,--threads [VALUE]     :  Number of threads to use (Max: 30)
+        
+        --useragent [VALUE]       :  Useragent to send to server
+        --proxy [VALUE]           :  Proxy server to use [Format: scheme://host:port]
+        --help                    :  Display the help menu
         
         
-        --url [VALUE]         : The Target URL [Format: scheme://host]
-        --useragent [VALUE]   : User-Agent To Send To Server
-        --cookie [VALUE]      : Cookie String To Use
-        --proxy [VALUE]       : Proxy Server To Use [Format: scheme://host:port]
-        --timeout [VALUE]     : Max Timeout For The HTTP Requests
-        --help                : Display The Help Menu
-        --rule-dir [VALUE]    : Path To The ModSecurity Activated Rules (Default: /etc/httpd/modsecurity.d/activated_rules)
-        --path [VALUE]        : Path To The XML Handler (Default: /)
-        --payload [VALUE]     : The XML/XSL Payload File To Use (Default: src/payload.xml)
+        ✠ 𝔰𝔠𝔞𝔫 𝔪𝔬𝔡𝔢𝔰
+        -----------
+        
+        -sv,--version             :  Search Version
+        -wf,--waf                 :  Detect WAF plugins
+        -su,--users               :  Extract ussernames
+        -bf,--bruteforce          :  Bruteforce accounts (using usernames found or a list)
+        -ex,--exploit             :  Run exploits tests
+        
     };
     print "\n\n";
     exit;
