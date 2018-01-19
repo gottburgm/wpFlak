@@ -24,7 +24,7 @@ If you want to support/help me/my projects :
 - **ZEC** : t1cctQEJxBvDhcXHdP4hKpS3LimRN2sFsbN
 
 
-# Installation
+# ✠ Installation ✠
 
 - wpFlak requires perl 5.18 to work and perlbrew (which provides it) may fail during installation
 - keep in mind that's only a beta version
@@ -34,7 +34,7 @@ If you want to support/help me/my projects :
       sudo sh install/install.sh
    ```
 
-# Usage
+# ✠ Usage ✠
 
 - See help menu :
 
