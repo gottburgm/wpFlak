@@ -39,11 +39,11 @@ If you want to support/help me/my projects :
 - See help menu :
 
    ```bash
-      perl5 wpflak.pl --help
+      perl wpflak.pl --help
    ```
 
 - TOR proxified requests example
 
    ```bash
-      perl5 wpflak.pl --url http://www.example.com/ --proxy socks://127.0.0.1:9050 --users
+      perl wpflak.pl --url http://www.example.com/ --proxy socks://127.0.0.1:9050 --users
    ```
