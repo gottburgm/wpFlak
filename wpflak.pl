@@ -145,7 +145,7 @@ sub initializeBrowser {
     $requester->{browser}->agent($ARGUMENTS->{useragent});
     $requester->{browser}->timeout($ARGUMENTS->{timeout});
     
-    if($ARGUMENTS->{proxy} && $ARGUMENTS->{proxy} =~ /^(https?|socks):\/\/[^:]+:[0-9]+$/i) {
+    if($ARGUMENTS->{proxy} && $ARGUMENTS->{proxy} =~ /^(https?|socks[45a]*):\/\/[^:]+:[0-9]+\/?$/i) {
         $requester->{browser}->proxy([qw/ ftp ftps http https /] => $ARGUMENTS->{proxy});
     }
     
@@ -542,6 +542,7 @@ sub extractComponents {
                 my @responses = asyncRequests(@requests);
                 
                 foreach my $response (@responses) {
+                    next if(!$response);
                     if($response->is_success) {
                         my $version = 0;
                         
